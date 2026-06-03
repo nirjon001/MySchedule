@@ -1,18 +1,15 @@
 """
 Smart Schedule Manager - STREAMLIT WEB VERSION (FIXED)
-Run with: streamlit run streamlit_app.py
+Now with proper sleep time detection
 """
 
 import streamlit as st
 import datetime
-import json
-import os
 import time
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 
-# ============ YOUR EXISTING SCHEDULE DATA ============
+# ============ YOUR SCHEDULE DATA ============
 CLASSES = [
     ("Sunday", 8, 30, 10, 0, "CSE405"),
     ("Sunday", 10, 10, 11, 40, "CSE303"),
@@ -57,13 +54,44 @@ def format_time(hour, minute):
     return f"{hour_12}:{minute:02d}{period}"
 
 def get_current_activity():
-    """Get current activity - FIXED"""
+    """Get current activity - Enhanced with sleep time detection"""
     now = datetime.datetime.now()
     weekday = now.strftime("%A")
     current_min = to_minutes(now.hour, now.minute)
     
+    # Sleep hours: 11 PM to 5 AM
+    is_sleep_time = current_min < to_minutes(5, 0) or current_min >= to_minutes(23, 0)
+    
     if weekday in ["Friday", "Saturday"]:
-        return "WEEKEND - Free day!", None
+        return "WEEKEND - Free day!", None, is_sleep_time
+    
+    # Check if it's sleeping hours
+    if is_sleep_time:
+        # Find first activity of the day
+        first_start = None
+        first_name = None
+        
+        for cls in CLASSES:
+            if cls[0] == weekday:
+                _, sh, sm, _, _, name = cls
+                start = to_minutes(sh, sm)
+                if first_start is None or start < first_start:
+                    first_start = start
+                    first_name = f"📚 {name}"
+        
+        for sh, sm, _, _, desc, act_type in DAILY_ROUTINE:
+            start = to_minutes(sh, sm)
+            if first_start is None or start < first_start:
+                first_start = start
+                icon = "📖" if act_type == "study" else "☕"
+                first_name = f"{icon} {desc}"
+        
+        if first_start and first_name:
+            time_until = first_start - current_min
+            hours = time_until // 60
+            mins = time_until % 60
+            first_time = format_time(first_start//60, first_start%60)
+            return f"😴 Sleep time! First activity at {first_time}: {first_name} (in {hours}h {mins}m)", None, True
     
     # Check classes
     for cls in CLASSES:
@@ -73,16 +101,16 @@ def get_current_activity():
             end = to_minutes(eh, em)
             if start <= current_min < end:
                 remaining = end - current_min
-                return f"📚 CLASS: {name}", remaining
+                return f"📚 CLASS: {name}", remaining, False
     
-    # Check routine activities
+    # Check routine
     for sh, sm, eh, em, desc, act_type in DAILY_ROUTINE:
         start = to_minutes(sh, sm)
         end = to_minutes(eh, em)
         if start <= current_min < end:
             remaining = end - current_min
             icon = "📖" if act_type == "study" else "☕"
-            return f"{icon} {desc}", remaining
+            return f"{icon} {desc}", remaining, False
     
     # Find next activity
     next_start = None
@@ -107,9 +135,11 @@ def get_current_activity():
     
     if next_start and next_name:
         time_until = next_start - current_min
-        return f"✨ Free time until {next_name} (in {time_until//60}h {time_until%60}m)", None
+        hours = time_until // 60
+        mins = time_until % 60
+        return f"✨ Free time until {next_name} (in {hours}h {mins}m)", None, False
     
-    return "✨ Free time - Day complete!", None
+    return "✨ Free time - Day complete!", None, False
 
 def get_today_schedule():
     """Get today's full schedule"""
@@ -122,7 +152,6 @@ def get_today_schedule():
     
     schedule = []
     
-    # Add classes
     for cls in CLASSES:
         if cls[0] == weekday:
             _, sh, sm, eh, em, name = cls
@@ -136,7 +165,6 @@ def get_today_schedule():
                 'duration': to_minutes(eh, em) - to_minutes(sh, sm)
             })
     
-    # Add routine
     for sh, sm, eh, em, desc, act_type in DAILY_ROUTINE:
         icon = "📖" if act_type == "study" else "☕"
         schedule.append({
@@ -149,10 +177,8 @@ def get_today_schedule():
             'duration': to_minutes(eh, em) - to_minutes(sh, sm)
         })
     
-    # Sort by start time
     schedule.sort(key=lambda x: x['start_min'])
     
-    # Mark current activity
     for item in schedule:
         item['is_current'] = item['start_min'] <= current_min < item['end_min']
     
@@ -201,25 +227,18 @@ def get_weekly_stats():
     
     return stats
 
-# ============ MAIN STREAMLIT APP ============
+# ============ MAIN APP ============
 def main():
-    st.set_page_config(
-        page_title="Smart Schedule Manager",
-        page_icon="🎓",
-        layout="wide"
-    )
+    st.set_page_config(page_title="Smart Schedule Manager", page_icon="🎓", layout="wide")
     
-    # Initialize session state
     if 'completed_tasks' not in st.session_state:
         st.session_state.completed_tasks = set()
     if 'show_timer' not in st.session_state:
         st.session_state.show_timer = False
     
-    # Header
     st.title("🎓 Smart Schedule Manager")
     st.caption("Your personal academic assistant")
     
-    # Sidebar
     with st.sidebar:
         st.header("📊 Overview")
         now = datetime.datetime.now()
@@ -232,23 +251,21 @@ def main():
         st.subheader("⚡ Quick Actions")
         if st.button("🍅 Start Pomodoro", use_container_width=True):
             st.session_state.show_timer = True
-        
         if st.button("🔄 Refresh Data", use_container_width=True):
             st.rerun()
     
-    # Main content
     col1, col2 = st.columns([2, 1])
     
     with col1:
         st.subheader("🟢 Current Activity")
-        activity, remaining = get_current_activity()
+        activity, remaining, is_sleep_time = get_current_activity()
         
-        if remaining:
-            remaining_str = f"{remaining // 60}h {remaining % 60}m remaining"
+        if is_sleep_time:
+            st.warning(f"**{activity}**")
+        elif remaining:
+            st.info(f"**{activity}**  \n⏱️ {remaining // 60}h {remaining % 60}m remaining")
         else:
-            remaining_str = ""
-        
-        st.info(f"**{activity}**  \n⏱️ {remaining_str}" if remaining_str else f"**{activity}**")
+            st.info(f"**{activity}**")
         
         st.subheader("📋 Today's Schedule")
         schedule = get_today_schedule()
@@ -260,11 +277,7 @@ def main():
                 is_current = row.get('is_current', False)
                 
                 with col_a:
-                    checked = st.checkbox(
-                        "✓",
-                        key=f"task_{idx}",
-                        value=task_key in st.session_state.completed_tasks
-                    )
+                    checked = st.checkbox("✓", key=f"task_{idx}", value=task_key in st.session_state.completed_tasks)
                     if checked:
                         st.session_state.completed_tasks.add(task_key)
                     elif task_key in st.session_state.completed_tasks:
@@ -273,11 +286,10 @@ def main():
                 with col_b:
                     if is_current:
                         st.markdown(f"**▶ {row['start']} - {row['end']}: {row['activity']}**")
+                    elif task_key in st.session_state.completed_tasks:
+                        st.markdown(f"~~{row['start']} - {row['end']}: {row['activity']}~~")
                     else:
-                        if task_key in st.session_state.completed_tasks:
-                            st.markdown(f"~~{row['start']} - {row['end']}: {row['activity']}~~")
-                        else:
-                            st.markdown(f"{row['start']} - {row['end']}: {row['activity']}")
+                        st.markdown(f"{row['start']} - {row['end']}: {row['activity']}")
                 
                 with col_c:
                     if is_current:
@@ -288,17 +300,14 @@ def main():
     with col2:
         st.subheader("📈 Today's Progress")
         if schedule:
-            total_duration = sum(item['duration'] for item in schedule)
-            completed_duration = 0
-            
+            total = sum(item['duration'] for item in schedule)
+            completed = 0
             now_min = to_minutes(datetime.datetime.now().hour, datetime.datetime.now().minute)
             for item in schedule:
-                if item['end_min'] <= now_min:
-                    completed_duration += item['duration']
-                elif item['activity'] in st.session_state.completed_tasks:
-                    completed_duration += item['duration']
+                if item['end_min'] <= now_min or item['activity'] in st.session_state.completed_tasks:
+                    completed += item['duration']
             
-            progress = int((completed_duration / total_duration) * 100) if total_duration > 0 else 0
+            progress = int((completed / total) * 100) if total > 0 else 0
             st.progress(progress, text=f"{progress}% Complete")
             st.metric("Tasks Completed", f"{len(st.session_state.completed_tasks)}")
     
@@ -306,32 +315,24 @@ def main():
     st.divider()
     st.subheader("📊 Analytics")
     
-    col1, col2 = st.columns(2)
+    chart_col1, chart_col2 = st.columns(2)
     
-    with col1:
+    with chart_col1:
         st.write("**Today's Time Distribution**")
         distribution = get_time_distribution()
         if distribution:
-            fig = go.Figure(data=[go.Pie(
-                labels=list(distribution.keys()),
-                values=list(distribution.values()),
-                hole=0.4,
-                marker=dict(colors=['#FF6B6B', '#4ECDC4', '#FFE66D'])
-            )])
+            fig = go.Figure(data=[go.Pie(labels=list(distribution.keys()), values=list(distribution.values()), hole=0.4)])
             fig.update_layout(height=400, margin=dict(t=0, l=0, r=0, b=0))
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No data for today")
     
-    with col2:
+    with chart_col2:
         st.write("**Weekly Study Hours**")
         weekly_stats = get_weekly_stats()
         df_weekly = pd.DataFrame(weekly_stats)
-        
         fig = go.Figure()
-        fig.add_trace(go.Bar(x=df_weekly['day'], y=df_weekly['study_hours'], name='Study Hours', marker_color='#4ECDC4'))
-        fig.add_trace(go.Bar(x=df_weekly['day'], y=df_weekly['class_hours'], name='Class Hours', marker_color='#FF6B6B'))
-        fig.update_layout(barmode='group', height=400, margin=dict(t=0, l=0, r=0, b=0), yaxis_title="Hours")
+        fig.add_trace(go.Bar(x=df_weekly['day'], y=df_weekly['study_hours'], name='Study', marker_color='#4ECDC4'))
+        fig.add_trace(go.Bar(x=df_weekly['day'], y=df_weekly['class_hours'], name='Class', marker_color='#FF6B6B'))
+        fig.update_layout(barmode='group', height=400, margin=dict(t=0, l=0, r=0, b=0))
         st.plotly_chart(fig, use_container_width=True)
     
     # Course Notes
@@ -343,8 +344,7 @@ def main():
     today_courses = set()
     for cls in CLASSES:
         if cls[0] == weekday:
-            course_code = cls[5]
-            today_courses.add(course_code)
+            today_courses.add(cls[5])
     
     if today_courses:
         cols = st.columns(len(today_courses))
@@ -357,18 +357,16 @@ def main():
     if st.session_state.get('show_timer', False):
         st.divider()
         st.subheader("🍅 Pomodoro Timer")
-        
-        timer_minutes = st.selectbox("Select duration:", [25, 45, 60], index=0)
-        
+        minutes = st.selectbox("Duration:", [25, 45, 60], index=0)
         if st.button("Start Timer"):
-            with st.spinner(f"Focus for {timer_minutes} minutes..."):
+            with st.spinner(f"Focus for {minutes} minutes..."):
                 placeholder = st.empty()
-                for remaining in range(timer_minutes * 60, 0, -1):
+                for remaining in range(minutes * 60, 0, -1):
                     mins = remaining // 60
                     secs = remaining % 60
-                    placeholder.markdown(f"### ⏰ Time remaining: {mins:02d}:{secs:02d}")
+                    placeholder.markdown(f"### ⏰ {mins:02d}:{secs:02d}")
                     time.sleep(1)
-                placeholder.markdown("### 🎉 Time's up! Great work!")
+                placeholder.markdown("### 🎉 Done! Great work!")
                 st.balloons()
             st.session_state.show_timer = False
             st.rerun()
