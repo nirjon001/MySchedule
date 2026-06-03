@@ -128,8 +128,8 @@ def get_current_activity():
     
     return "✨ Free time - Day complete!", None
 
-def get_gaps_and_utilization(completed_activities):
-    """Find gaps between activities and mark if utilized"""
+def get_gaps_and_utilization(completed_activities, wasted_activities):
+    """Find gaps between activities and mark if utilized or wasted"""
     activities = get_all_activities()
     
     if len(activities) < 2:
@@ -148,18 +148,22 @@ def get_gaps_and_utilization(completed_activities):
             # Check if gap has passed
             is_passed = current_end <= current_min
             
-            # Check if gap was utilized (any study activity done during this time)
+            # Check if gap was utilized or wasted
             utilized = False
+            wasted = False
             utilized_note = ""
             
             # Look for study blocks that fall within this gap
             for act in activities:
                 if act['type'] == 'study':
                     if current_end <= act['start_min'] <= next_start:
-                        # Check if this study block was completed
+                        # Check if this study block was completed or wasted
                         if act['name'] in completed_activities:
                             utilized = True
                             utilized_note = "✓ Used for study"
+                        elif act['name'] in wasted_activities:
+                            wasted = True
+                            utilized_note = "✗ Marked as wasted"
                         elif act['start_min'] <= current_min:
                             utilized_note = "⏳ In progress"
                         else:
@@ -173,63 +177,81 @@ def get_gaps_and_utilization(completed_activities):
                 'duration': gap_duration,
                 'is_passed': is_passed,
                 'utilized': utilized,
+                'wasted': wasted,
                 'utilized_note': utilized_note,
                 'between': f"{activities[i]['name'].split(' ', 1)[1]} → {activities[i+1]['name'].split(' ', 1)[1]}"
             })
     
     return gaps
 
-def get_todays_stats(completed_activities):
-    """Get today's statistics based on ACTUAL completed activities"""
+def get_todays_stats(completed_activities, wasted_activities):
+    """Get today's statistics based on ACTUAL completed/wasted activities"""
     activities = get_all_activities()
     now = get_now()
     current_min = to_minutes(now.hour, now.minute)
     
-    # Calculate completed study time (only activities marked complete OR passed)
+    # Calculate completed and wasted study time
     total_study_minutes = 0
     completed_study_minutes = 0
+    wasted_study_minutes = 0
     total_class_minutes = 0
     attended_class_minutes = 0
     
     for act in activities:
         if act['type'] == 'study':
             total_study_minutes += act['duration']
-            # Consider complete if marked or time has passed
-            if act['name'] in completed_activities or act['end_min'] <= current_min:
+            # Check if marked as completed
+            if act['name'] in completed_activities:
                 completed_study_minutes += act['duration']
+            # Check if marked as wasted
+            elif act['name'] in wasted_activities:
+                wasted_study_minutes += act['duration']
+            # If time has passed and not marked, it's automatically wasted
+            elif act['end_min'] <= current_min:
+                wasted_study_minutes += act['duration']
         elif act['type'] == 'class':
             total_class_minutes += act['duration']
             if act['end_min'] <= current_min:
                 attended_class_minutes += act['duration']
     
-    # Count completed tasks
+    # Count tasks
     completed_tasks = len([a for a in activities if a['name'] in completed_activities])
+    wasted_tasks = len([a for a in activities if a['name'] in wasted_activities])
     total_tasks = len([a for a in activities if a['type'] == 'study'])
     
-    # Calculate progress percentage
+    # Calculate progress percentages
     study_progress = int((completed_study_minutes / total_study_minutes) * 100) if total_study_minutes > 0 else 0
+    wasted_percentage = int((wasted_study_minutes / total_study_minutes) * 100) if total_study_minutes > 0 else 0
     class_progress = int((attended_class_minutes / total_class_minutes) * 100) if total_class_minutes > 0 else 0
     
     return {
         'total_study_minutes': total_study_minutes,
         'completed_study_minutes': completed_study_minutes,
+        'wasted_study_minutes': wasted_study_minutes,
         'study_progress': study_progress,
+        'wasted_percentage': wasted_percentage,
         'total_class_minutes': total_class_minutes,
         'attended_class_minutes': attended_class_minutes,
         'class_progress': class_progress,
         'completed_tasks': completed_tasks,
+        'wasted_tasks': wasted_tasks,
         'total_tasks': total_tasks,
         'activities': activities
     }
 
-def get_weekly_stats():
-    """Get weekly statistics for bar chart"""
+def get_weekly_stats(weekly_completed, weekly_wasted):
+    """Get weekly statistics based on actual completed/wasted time"""
     days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
     stats = []
     
     for day in days:
+        # Get actual completed study time from session state
+        completed_mins = weekly_completed.get(day, 0)
+        wasted_mins = weekly_wasted.get(day, 0)
+        
+        # Calculate planned hours
         class_hours = 0
-        study_hours = 0
+        planned_study_hours = 0
         
         for cls in CLASSES:
             if cls[0] == day:
@@ -239,30 +261,52 @@ def get_weekly_stats():
         if day not in ["Friday", "Saturday"]:
             for sh, sm, eh, em, _, act_type in DAILY_ROUTINE:
                 if act_type == "study":
-                    study_hours += (to_minutes(eh, em) - to_minutes(sh, sm)) / 60
+                    planned_study_hours += (to_minutes(eh, em) - to_minutes(sh, sm)) / 60
         
         stats.append({
             'day': day,
             'class_hours': round(class_hours, 1),
-            'study_hours': round(study_hours, 1),
-            'total_hours': round(class_hours + study_hours, 1)
+            'planned_study': round(planned_study_hours, 1),
+            'completed_study': round(completed_mins / 60, 1),
+            'wasted_study': round(wasted_mins / 60, 1),
+            'total_hours': round(class_hours + planned_study_hours, 1)
         })
     
     return stats
 
 def create_completed_pie_chart(stats):
-    """Create pie chart showing ONLY completed vs remaining"""
+    """Create pie chart showing completed vs wasted vs remaining"""
     completed = stats['completed_study_minutes']
-    remaining = stats['total_study_minutes'] - completed
+    wasted = stats['wasted_study_minutes']
+    remaining = stats['total_study_minutes'] - completed - wasted
     
-    if completed == 0 and remaining == 0:
+    if completed == 0 and wasted == 0 and remaining == 0:
         return None
     
+    labels = []
+    values = []
+    colors = []
+    
+    if completed > 0:
+        labels.append('✅ Completed Study')
+        values.append(completed)
+        colors.append('#4ECDC4')
+    
+    if wasted > 0:
+        labels.append('❌ Wasted Time')
+        values.append(wasted)
+        colors.append('#FF6B6B')
+    
+    if remaining > 0:
+        labels.append('⏳ Remaining Study')
+        values.append(remaining)
+        colors.append('#FFE66D')
+    
     fig = go.Figure(data=[go.Pie(
-        labels=['✅ Completed Study', '⏳ Remaining Study'],
-        values=[completed, remaining],
+        labels=labels,
+        values=values,
         hole=0.4,
-        marker=dict(colors=['#4ECDC4', '#FF6B6B']),
+        marker=dict(colors=colors),
         textinfo='label+percent',
         textposition='auto'
     )])
@@ -273,11 +317,56 @@ def create_completed_pie_chart(stats):
 def main():
     st.set_page_config(page_title="Smart Schedule Manager", page_icon="🎓", layout="wide")
     
+    # Apply smaller font CSS
+    st.markdown("""
+        <style>
+        .stApp {
+            font-size: 12px;
+        }
+        .stMarkdown {
+            font-size: 12px;
+        }
+        .stMetric {
+            font-size: 12px;
+        }
+        .stDataFrame {
+            font-size: 11px;
+        }
+        div[data-testid="stMetricValue"] {
+            font-size: 18px;
+        }
+        div[data-testid="stMetricLabel"] {
+            font-size: 11px;
+        }
+        .stButton button {
+            font-size: 12px;
+        }
+        .stCheckbox label {
+            font-size: 12px;
+        }
+        .stAlert {
+            font-size: 12px;
+        }
+        .stSelectbox label {
+            font-size: 12px;
+        }
+        .stCaption {
+            font-size: 10px;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
     # Initialize session state
     if 'completed_activities' not in st.session_state:
         st.session_state.completed_activities = set()
+    if 'wasted_activities' not in st.session_state:
+        st.session_state.wasted_activities = set()
     if 'show_timer' not in st.session_state:
         st.session_state.show_timer = False
+    if 'weekly_completed' not in st.session_state:
+        st.session_state.weekly_completed = {}
+    if 'weekly_wasted' not in st.session_state:
+        st.session_state.weekly_wasted = {}
     
     st.title("🎓 Smart Schedule Manager")
     st.caption("Your personal academic assistant")
@@ -304,10 +393,11 @@ def main():
         # Reset button for testing
         if st.button("🗑️ Reset Today's Progress", use_container_width=True):
             st.session_state.completed_activities = set()
+            st.session_state.wasted_activities = set()
             st.rerun()
     
     # Get current stats
-    stats = get_todays_stats(st.session_state.completed_activities)
+    stats = get_todays_stats(st.session_state.completed_activities, st.session_state.wasted_activities)
     
     # Main content - 3 columns
     col1, col2, col3 = st.columns([2, 1, 1])
@@ -327,42 +417,41 @@ def main():
         
         if activities:
             for idx, act in enumerate(activities):
-                col_a, col_b, col_c = st.columns([0.5, 3, 1])
+                col_a, col_b, col_c, col_d = st.columns([0.3, 3, 0.8, 0.8])
                 is_completed = act['name'] in st.session_state.completed_activities
+                is_wasted = act['name'] in st.session_state.wasted_activities
                 is_current = act['start_min'] <= to_minutes(get_now().hour, get_now().minute) < act['end_min']
                 
                 with col_a:
-                    if act['type'] == 'study':  # Only study tasks are checkable
-                        checked = st.checkbox(
-                            "✓",
-                            key=f"task_{idx}",
-                            value=is_completed
-                        )
-                        if checked and not is_completed:
-                            st.session_state.completed_activities.add(act['name'])
-                            st.rerun()
-                        elif not checked and is_completed:
-                            st.session_state.completed_activities.remove(act['name'])
-                            st.rerun()
-                    else:
-                        st.write("📌")
+                    st.write("")
                 
                 with col_b:
                     if is_current:
                         st.markdown(f"**▶ {act['name']}**")
                         st.caption(f"_{format_time(act['start'][0], act['start'][1])} - {format_time(act['end'][0], act['end'][1])}_")
                     elif is_completed:
-                        st.markdown(f"~~{act['name']}~~")
+                        st.markdown(f"✅ **{act['name']}**")
+                        st.caption(f"_{format_time(act['start'][0], act['start'][1])} - {format_time(act['end'][0], act['end'][1])}_")
+                    elif is_wasted:
+                        st.markdown(f"❌ **{act['name']}**")
                         st.caption(f"_{format_time(act['start'][0], act['start'][1])} - {format_time(act['end'][0], act['end'][1])}_")
                     else:
                         st.markdown(act['name'])
                         st.caption(f"{format_time(act['start'][0], act['start'][1])} - {format_time(act['end'][0], act['end'][1])}")
                 
                 with col_c:
-                    if is_current:
-                        st.caption("🟢 NOW")
-                    elif is_completed:
-                        st.caption("✅ DONE")
+                    if act['type'] == 'study' and not is_completed and not is_wasted:
+                        if st.button("✓ Complete", key=f"complete_{idx}"):
+                            st.session_state.completed_activities.add(act['name'])
+                            if act['name'] in st.session_state.wasted_activities:
+                                st.session_state.wasted_activities.remove(act['name'])
+                            st.rerun()
+                
+                with col_d:
+                    if act['type'] == 'study' and not is_completed and not is_wasted:
+                        if st.button("✗ Waste", key=f"waste_{idx}"):
+                            st.session_state.wasted_activities.add(act['name'])
+                            st.rerun()
         else:
             st.info("🎉 Weekend! Time to relax!")
     
@@ -374,23 +463,27 @@ def main():
         total_mins = stats['total_study_minutes'] % 60
         completed_hours = stats['completed_study_minutes'] // 60
         completed_mins = stats['completed_study_minutes'] % 60
+        wasted_hours = stats['wasted_study_minutes'] // 60
+        wasted_mins = stats['wasted_study_minutes'] % 60
         
         st.metric(
-            "📖 Total Study Time",
-            f"{completed_hours}h {completed_mins}m / {total_hours}h {total_mins}m",
-            delta=f"{stats['study_progress']}% complete"
+            "📖 Study Time",
+            f"✅ {completed_hours}h {completed_mins}m | ❌ {wasted_hours}h {wasted_mins}m",
+            delta=f"{stats['study_progress']}% completed"
         )
         
-        # Progress bar
-        st.progress(stats['study_progress'] / 100, text=f"{stats['study_progress']}% of study goals met")
+        # Progress bars
+        st.progress(stats['study_progress'] / 100, text=f"📚 Completed: {stats['study_progress']}%")
+        if stats['wasted_percentage'] > 0:
+            st.progress(stats['wasted_percentage'] / 100, text=f"⚠️ Wasted: {stats['wasted_percentage']}%")
         
         st.divider()
         
-        st.subheader("✅ Task Completion")
+        st.subheader("✅ Task Status")
         st.metric(
             "Study Tasks",
-            f"{stats['completed_tasks']} / {stats['total_tasks']}",
-            delta=f"{int(stats['completed_tasks']/stats['total_tasks']*100) if stats['total_tasks']>0 else 0}%"
+            f"✅ {stats['completed_tasks']} / ❌ {stats['wasted_tasks']} / 📋 {stats['total_tasks']}",
+            delta=f"{int(stats['completed_tasks']/stats['total_tasks']*100) if stats['total_tasks']>0 else 0}% success rate"
         )
         
         st.divider()
@@ -410,7 +503,7 @@ def main():
     with col3:
         st.subheader("⏰ Time Gaps")
         
-        gaps = get_gaps_and_utilization(st.session_state.completed_activities)
+        gaps = get_gaps_and_utilization(st.session_state.completed_activities, st.session_state.wasted_activities)
         
         if gaps:
             for gap in gaps:
@@ -420,27 +513,31 @@ def main():
                 if gap['utilized']:
                     st.success(f"✅ **{duration_hours}h {duration_mins}m gap**")
                     st.caption(f"_{gap['between']}_")
-                    st.caption(f"✓ Utilized: {gap['utilized_note']}")
-                elif gap['is_passed']:
+                    st.caption(f"✓ {gap['utilized_note']}")
+                elif gap['wasted']:
                     st.error(f"❌ **{duration_hours}h {duration_mins}m gap WASTED**")
                     st.caption(f"_{gap['between']}_")
-                    st.caption("⚠️ Free time not used for studying")
+                    st.caption(f"✗ {gap['utilized_note']}")
+                elif gap['is_passed']:
+                    st.warning(f"⚠️ **{duration_hours}h {duration_mins}m gap UNUSED**")
+                    st.caption(f"_{gap['between']}_")
+                    st.caption("💡 Mark tasks as completed or wasted!")
                 else:
-                    st.warning(f"⏰ **{duration_hours}h {duration_mins}m gap ahead**")
+                    st.info(f"⏰ **{duration_hours}h {duration_mins}m gap ahead**")
                     st.caption(f"_{gap['between']}_")
                     st.caption("💡 Plan to use this time for study!")
                 st.divider()
         else:
             st.info("No significant gaps today! 🎉")
     
-    # Analytics Section - ONLY SHOWS COMPLETED DATA
+    # Analytics Section - BASED ON COMPLETED/WASTED DATA
     st.divider()
     st.subheader("📊 Your Achievements Today")
     
     col_a, col_b = st.columns(2)
     
     with col_a:
-        # Pie chart of completed vs remaining
+        # Pie chart of completed vs wasted vs remaining
         st.write("**Study Time Breakdown**")
         pie_chart = create_completed_pie_chart(stats)
         if pie_chart:
@@ -449,23 +546,40 @@ def main():
             st.info("No study data yet. Start studying! 📚")
     
     with col_b:
-        # Bar chart - Weekly comparison (planned vs what you've done this week)
-        st.write("**Weekly Study Hours (Planned)**")
-        weekly_stats = get_weekly_stats()
+        # Save today's stats to weekly
+        today = get_now().strftime("%A")
+        st.session_state.weekly_completed[today] = stats['completed_study_minutes']
+        st.session_state.weekly_wasted[today] = stats['wasted_study_minutes']
+        
+        # Bar chart - Weekly comparison (planned vs completed)
+        st.write("**Weekly Study Hours (Planned vs Actual)**")
+        weekly_stats = get_weekly_stats(st.session_state.weekly_completed, st.session_state.weekly_wasted)
         df_weekly = pd.DataFrame(weekly_stats)
         
         fig = go.Figure()
         fig.add_trace(go.Bar(
             x=df_weekly['day'],
-            y=df_weekly['study_hours'],
+            y=df_weekly['planned_study'],
             name='Planned Study',
             marker_color='#4ECDC4'
         ))
         fig.add_trace(go.Bar(
             x=df_weekly['day'],
+            y=df_weekly['completed_study'],
+            name='Actually Completed',
+            marker_color='#00FF00'
+        ))
+        fig.add_trace(go.Bar(
+            x=df_weekly['day'],
+            y=df_weekly['wasted_study'],
+            name='Wasted Time',
+            marker_color='#FF6B6B'
+        ))
+        fig.add_trace(go.Bar(
+            x=df_weekly['day'],
             y=df_weekly['class_hours'],
             name='Class Hours',
-            marker_color='#FF6B6B'
+            marker_color='#FFE66D'
         ))
         fig.update_layout(
             barmode='group',
@@ -483,7 +597,8 @@ def main():
         timeline_data = []
         for act in activities:
             is_completed = act['name'] in st.session_state.completed_activities
-            status = "✅ Completed" if is_completed else "⏳ Pending"
+            is_wasted = act['name'] in st.session_state.wasted_activities
+            status = "✅ Completed" if is_completed else "❌ Wasted" if is_wasted else "⏳ Pending"
             if act['start_min'] <= to_minutes(get_now().hour, get_now().minute) < act['end_min']:
                 status = "🟢 In Progress"
             
