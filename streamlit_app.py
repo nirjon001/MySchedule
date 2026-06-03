@@ -1,6 +1,6 @@
 """
-Smart Schedule Manager - ENHANCED COMPACT VERSION
-All features with smaller fonts for better screen fit
+Smart Schedule Manager - ENHANCED VERSION
+Tracks actual completed activities, study time, and gap utilization
 """
 
 import streamlit as st
@@ -10,56 +10,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import pytz
-
-# ============ COMPACT CSS ============
-st.markdown("""
-    <style>
-        /* Smaller fonts everywhere */
-        .stMarkdown, .stText, .stCaption, div[data-testid="stMetric"] {
-            font-size: 12px !important;
-        }
-        h1 {
-            font-size: 24px !important;
-            margin-bottom: 0.5rem !important;
-        }
-        h2, h3, .stSubheader {
-            font-size: 16px !important;
-            margin-bottom: 0.3rem !important;
-        }
-        .stButton button {
-            font-size: 12px !important;
-            padding: 4px 8px !important;
-        }
-        div[data-testid="stMetric"] label {
-            font-size: 11px !important;
-        }
-        div[data-testid="stMetric"] div {
-            font-size: 16px !important;
-        }
-        .stProgress > div > div {
-            height: 6px !important;
-        }
-        /* Reduce padding */
-        .block-container {
-            padding-top: 0.5rem !important;
-            padding-bottom: 0.5rem !important;
-            padding-left: 1rem !important;
-            padding-right: 1rem !important;
-        }
-        hr {
-            margin: 0.3rem 0 !important;
-        }
-        /* Smaller dataframe */
-        .stDataFrame {
-            font-size: 11px !important;
-        }
-        /* Compact info/warning boxes */
-        .stAlert {
-            padding: 0.3rem !important;
-            font-size: 12px !important;
-        }
-    </style>
-""", unsafe_allow_html=True)
 
 # ============ BANGLADESH TIMEZONE ============
 DHAKA_TZ = pytz.timezone('Asia/Dhaka')
@@ -198,13 +148,15 @@ def get_gaps_and_utilization(completed_activities):
             # Check if gap has passed
             is_passed = current_end <= current_min
             
-            # Check if gap was utilized
+            # Check if gap was utilized (any study activity done during this time)
             utilized = False
             utilized_note = ""
             
+            # Look for study blocks that fall within this gap
             for act in activities:
                 if act['type'] == 'study':
                     if current_end <= act['start_min'] <= next_start:
+                        # Check if this study block was completed
                         if act['name'] in completed_activities:
                             utilized = True
                             utilized_note = "✓ Used for study"
@@ -214,11 +166,15 @@ def get_gaps_and_utilization(completed_activities):
                             utilized_note = "⏰ Upcoming"
             
             gaps.append({
+                'start_time': activities[i]['end'],
+                'end_time': activities[i + 1]['start'],
+                'start_min': current_end,
+                'end_min': next_start,
                 'duration': gap_duration,
                 'is_passed': is_passed,
                 'utilized': utilized,
                 'utilized_note': utilized_note,
-                'between': f"{activities[i]['name'].split(' ', 1)[1][:20]} → {activities[i+1]['name'].split(' ', 1)[1][:20]}"
+                'between': f"{activities[i]['name'].split(' ', 1)[1]} → {activities[i+1]['name'].split(' ', 1)[1]}"
             })
     
     return gaps
@@ -229,6 +185,7 @@ def get_todays_stats(completed_activities):
     now = get_now()
     current_min = to_minutes(now.hour, now.minute)
     
+    # Calculate completed study time (only activities marked complete OR passed)
     total_study_minutes = 0
     completed_study_minutes = 0
     total_class_minutes = 0
@@ -237,6 +194,7 @@ def get_todays_stats(completed_activities):
     for act in activities:
         if act['type'] == 'study':
             total_study_minutes += act['duration']
+            # Consider complete if marked or time has passed
             if act['name'] in completed_activities or act['end_min'] <= current_min:
                 completed_study_minutes += act['duration']
         elif act['type'] == 'class':
@@ -244,9 +202,11 @@ def get_todays_stats(completed_activities):
             if act['end_min'] <= current_min:
                 attended_class_minutes += act['duration']
     
+    # Count completed tasks
     completed_tasks = len([a for a in activities if a['name'] in completed_activities])
     total_tasks = len([a for a in activities if a['type'] == 'study'])
     
+    # Calculate progress percentage
     study_progress = int((completed_study_minutes / total_study_minutes) * 100) if total_study_minutes > 0 else 0
     class_progress = int((attended_class_minutes / total_class_minutes) * 100) if total_class_minutes > 0 else 0
     
@@ -264,11 +224,10 @@ def get_todays_stats(completed_activities):
 
 def get_weekly_stats():
     """Get weekly statistics for bar chart"""
-    days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-    full_days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
     stats = []
     
-    for idx, day in enumerate(full_days):
+    for day in days:
         class_hours = 0
         study_hours = 0
         
@@ -283,12 +242,32 @@ def get_weekly_stats():
                     study_hours += (to_minutes(eh, em) - to_minutes(sh, sm)) / 60
         
         stats.append({
-            'day': days[idx],
+            'day': day,
             'class_hours': round(class_hours, 1),
             'study_hours': round(study_hours, 1),
+            'total_hours': round(class_hours + study_hours, 1)
         })
     
     return stats
+
+def create_completed_pie_chart(stats):
+    """Create pie chart showing ONLY completed vs remaining"""
+    completed = stats['completed_study_minutes']
+    remaining = stats['total_study_minutes'] - completed
+    
+    if completed == 0 and remaining == 0:
+        return None
+    
+    fig = go.Figure(data=[go.Pie(
+        labels=['✅ Completed Study', '⏳ Remaining Study'],
+        values=[completed, remaining],
+        hole=0.4,
+        marker=dict(colors=['#4ECDC4', '#FF6B6B']),
+        textinfo='label+percent',
+        textposition='auto'
+    )])
+    fig.update_layout(height=400, margin=dict(t=0, l=0, r=0, b=0))
+    return fig
 
 # ============ MAIN APP ============
 def main():
@@ -300,30 +279,32 @@ def main():
     if 'show_timer' not in st.session_state:
         st.session_state.show_timer = False
     
-    # Header with compact title
-    col_title, col_time = st.columns([3, 1])
-    with col_title:
-        st.title("🎓 Smart Schedule Manager")
-        st.caption("🇧🇩 Bangladesh Time (UTC+6)")
-    with col_time:
-        now = get_now()
-        st.metric("", now.strftime("%I:%M %p"), delta=now.strftime("%A"))
+    st.title("🎓 Smart Schedule Manager")
+    st.caption("Your personal academic assistant")
     
     # Sidebar
     with st.sidebar:
-        st.header("⚡ Quick Actions")
+        st.header("📊 Overview")
+        now = get_now()
+        st.metric("Current Time", now.strftime("%I:%M %p"))
+        st.metric("Today's Date", now.strftime("%B %d, %Y"))
+        st.metric("Day", now.strftime("%A"))
+        st.caption("🇧🇩 Bangladesh Time (UTC+6)")
+        
+        st.divider()
+        
+        st.subheader("⚡ Quick Actions")
         if st.button("🍅 Start Pomodoro", use_container_width=True):
             st.session_state.show_timer = True
-        if st.button("🔄 Refresh", use_container_width=True):
-            st.rerun()
-        if st.button("🗑️ Reset Progress", use_container_width=True):
-            st.session_state.completed_activities = set()
+        if st.button("🔄 Refresh Data", use_container_width=True):
             st.rerun()
         
         st.divider()
-        stats = get_todays_stats(st.session_state.completed_activities)
-        st.metric("📊 Progress", f"{stats['study_progress']}%")
-        st.metric("✅ Tasks", f"{stats['completed_tasks']}/{stats['total_tasks']}")
+        
+        # Reset button for testing
+        if st.button("🗑️ Reset Today's Progress", use_container_width=True):
+            st.session_state.completed_activities = set()
+            st.rerun()
     
     # Get current stats
     stats = get_todays_stats(st.session_state.completed_activities)
@@ -334,8 +315,10 @@ def main():
     with col1:
         st.subheader("🟢 Current Activity")
         activity, remaining = get_current_activity()
+        
         if remaining:
-            st.info(f"**{activity}**  \n⏱️ {remaining // 60}h {remaining % 60}m remaining")
+            remaining_str = f"{remaining // 60}h {remaining % 60}m remaining"
+            st.info(f"**{activity}**  \n⏱️ {remaining_str}")
         else:
             st.info(f"**{activity}**")
         
@@ -344,83 +327,85 @@ def main():
         
         if activities:
             for idx, act in enumerate(activities):
+                col_a, col_b, col_c = st.columns([0.5, 3, 1])
                 is_completed = act['name'] in st.session_state.completed_activities
                 is_current = act['start_min'] <= to_minutes(get_now().hour, get_now().minute) < act['end_min']
                 
-                col_a, col_b, col_c = st.columns([0.3, 3, 0.8])
-                
                 with col_a:
-                    if act['type'] == 'study':
-                        checked = st.checkbox("✓", key=f"task_{idx}", value=is_completed)
-                        if checked != is_completed:
-                            if checked:
-                                st.session_state.completed_activities.add(act['name'])
-                            else:
-                                st.session_state.completed_activities.remove(act['name'])
+                    if act['type'] == 'study':  # Only study tasks are checkable
+                        checked = st.checkbox(
+                            "✓",
+                            key=f"task_{idx}",
+                            value=is_completed
+                        )
+                        if checked and not is_completed:
+                            st.session_state.completed_activities.add(act['name'])
+                            st.rerun()
+                        elif not checked and is_completed:
+                            st.session_state.completed_activities.remove(act['name'])
                             st.rerun()
                     else:
                         st.write("📌")
                 
                 with col_b:
-                    time_str = f"{format_time(act['start'][0], act['start'][1])}"
                     if is_current:
-                        st.markdown(f"**▶ {act['name'][:35]}**")
-                        st.caption(time_str)
+                        st.markdown(f"**▶ {act['name']}**")
+                        st.caption(f"_{format_time(act['start'][0], act['start'][1])} - {format_time(act['end'][0], act['end'][1])}_")
                     elif is_completed:
-                        st.markdown(f"~~{act['name'][:35]}~~")
-                        st.caption(time_str)
+                        st.markdown(f"~~{act['name']}~~")
+                        st.caption(f"_{format_time(act['start'][0], act['start'][1])} - {format_time(act['end'][0], act['end'][1])}_")
                     else:
-                        st.markdown(act['name'][:35])
-                        st.caption(time_str)
+                        st.markdown(act['name'])
+                        st.caption(f"{format_time(act['start'][0], act['start'][1])} - {format_time(act['end'][0], act['end'][1])}")
                 
                 with col_c:
                     if is_current:
-                        st.caption("🟢")
+                        st.caption("🟢 NOW")
                     elif is_completed:
-                        st.caption("✅")
+                        st.caption("✅ DONE")
         else:
             st.info("🎉 Weekend! Time to relax!")
     
     with col2:
-        st.subheader("📊 Progress")
+        st.subheader("📊 Today's Study Progress")
         
-        # Study time
+        # Show total study time
         total_hours = stats['total_study_minutes'] // 60
         total_mins = stats['total_study_minutes'] % 60
         completed_hours = stats['completed_study_minutes'] // 60
         completed_mins = stats['completed_study_minutes'] % 60
         
-        st.metric("📖 Study Time", f"{completed_hours}h {completed_mins}m / {total_hours}h {total_mins}m")
-        st.progress(stats['study_progress'] / 100)
+        st.metric(
+            "📖 Total Study Time",
+            f"{completed_hours}h {completed_mins}m / {total_hours}h {total_mins}m",
+            delta=f"{stats['study_progress']}% complete"
+        )
+        
+        # Progress bar
+        st.progress(stats['study_progress'] / 100, text=f"{stats['study_progress']}% of study goals met")
         
         st.divider()
         
-        # Study breakdown pie chart (smaller)
-        completed = stats['completed_study_minutes']
-        remaining = stats['total_study_minutes'] - completed
-        
-        if completed > 0 or remaining > 0:
-            fig = go.Figure(data=[go.Pie(
-                labels=['✅ Done', '⏳ Left'],
-                values=[completed, remaining],
-                hole=0.5,
-                marker=dict(colors=['#4ECDC4', '#FF6B6B']),
-                textinfo='percent',
-                showlegend=False
-            )])
-            fig.update_layout(height=180, margin=dict(t=0, l=0, r=0, b=0))
-            st.plotly_chart(fig, use_container_width=True)
+        st.subheader("✅ Task Completion")
+        st.metric(
+            "Study Tasks",
+            f"{stats['completed_tasks']} / {stats['total_tasks']}",
+            delta=f"{int(stats['completed_tasks']/stats['total_tasks']*100) if stats['total_tasks']>0 else 0}%"
+        )
         
         st.divider()
         
-        # Class attendance
+        st.subheader("📚 Class Attendance")
         class_hours = stats['attended_class_minutes'] // 60
         class_mins = stats['attended_class_minutes'] % 60
         total_class_hours = stats['total_class_minutes'] // 60
         total_class_mins = stats['total_class_minutes'] % 60
         
-        st.metric("📚 Classes", f"{class_hours}h {class_mins}m / {total_class_hours}h {total_class_mins}m")
-        st.progress(stats['class_progress'] / 100)
+        st.metric(
+            "Classes Attended",
+            f"{class_hours}h {class_mins}m / {total_class_hours}h {total_class_mins}m",
+            delta=f"{stats['class_progress']}%"
+        )
     
     with col3:
         st.subheader("⏰ Time Gaps")
@@ -428,26 +413,44 @@ def main():
         gaps = get_gaps_and_utilization(st.session_state.completed_activities)
         
         if gaps:
-            for gap in gaps[:3]:  # Show only first 3 gaps
-                hours = gap['duration'] // 60
-                mins = gap['duration'] % 60
+            for gap in gaps:
+                duration_hours = gap['duration'] // 60
+                duration_mins = gap['duration'] % 60
                 
                 if gap['utilized']:
-                    st.success(f"✅ {hours}h {mins}m - Used")
+                    st.success(f"✅ **{duration_hours}h {duration_mins}m gap**")
+                    st.caption(f"_{gap['between']}_")
+                    st.caption(f"✓ Utilized: {gap['utilized_note']}")
                 elif gap['is_passed']:
-                    st.error(f"❌ {hours}h {mins}m - Wasted")
+                    st.error(f"❌ **{duration_hours}h {duration_mins}m gap WASTED**")
+                    st.caption(f"_{gap['between']}_")
+                    st.caption("⚠️ Free time not used for studying")
                 else:
-                    st.warning(f"⏰ {hours}h {mins}m - Ahead")
-                st.caption(f"_{gap['between'][:30]}...")
-            if len(gaps) > 3:
-                st.caption(f"... +{len(gaps)-3} more")
+                    st.warning(f"⏰ **{duration_hours}h {duration_mins}m gap ahead**")
+                    st.caption(f"_{gap['between']}_")
+                    st.caption("💡 Plan to use this time for study!")
+                st.divider()
         else:
-            st.info("No significant gaps!")
-        
-        st.divider()
-        
-        # Weekly overview (compact bar chart)
-        st.subheader("📅 Weekly")
+            st.info("No significant gaps today! 🎉")
+    
+    # Analytics Section - ONLY SHOWS COMPLETED DATA
+    st.divider()
+    st.subheader("📊 Your Achievements Today")
+    
+    col_a, col_b = st.columns(2)
+    
+    with col_a:
+        # Pie chart of completed vs remaining
+        st.write("**Study Time Breakdown**")
+        pie_chart = create_completed_pie_chart(stats)
+        if pie_chart:
+            st.plotly_chart(pie_chart, use_container_width=True)
+        else:
+            st.info("No study data yet. Start studying! 📚")
+    
+    with col_b:
+        # Bar chart - Weekly comparison (planned vs what you've done this week)
+        st.write("**Weekly Study Hours (Planned)**")
         weekly_stats = get_weekly_stats()
         df_weekly = pd.DataFrame(weekly_stats)
         
@@ -455,32 +458,48 @@ def main():
         fig.add_trace(go.Bar(
             x=df_weekly['day'],
             y=df_weekly['study_hours'],
-            name='Study',
-            marker_color='#4ECDC4',
-            text=df_weekly['study_hours'],
-            textposition='auto',
-            textfont=dict(size=9)
+            name='Planned Study',
+            marker_color='#4ECDC4'
         ))
         fig.add_trace(go.Bar(
             x=df_weekly['day'],
             y=df_weekly['class_hours'],
-            name='Class',
-            marker_color='#FF6B6B',
-            text=df_weekly['class_hours'],
-            textposition='auto',
-            textfont=dict(size=9)
+            name='Class Hours',
+            marker_color='#FF6B6B'
         ))
         fig.update_layout(
             barmode='group',
-            height=200,
-            margin=dict(t=10, l=0, r=0, b=0),
-            legend=dict(orientation='h', yanchor='bottom', y=1, xanchor='right', x=1, font=dict(size=9)),
-            font=dict(size=9)
+            height=400,
+            margin=dict(t=0, l=0, r=0, b=0),
+            yaxis_title="Hours"
         )
         st.plotly_chart(fig, use_container_width=True)
     
-    # Bottom section - Course Notes (compact)
+    # Today's timeline with completion status
     st.divider()
+    st.subheader("📅 Today's Timeline")
+    
+    if activities:
+        timeline_data = []
+        for act in activities:
+            is_completed = act['name'] in st.session_state.completed_activities
+            status = "✅ Completed" if is_completed else "⏳ Pending"
+            if act['start_min'] <= to_minutes(get_now().hour, get_now().minute) < act['end_min']:
+                status = "🟢 In Progress"
+            
+            timeline_data.append({
+                'Time': f"{format_time(act['start'][0], act['start'][1])} - {format_time(act['end'][0], act['end'][1])}",
+                'Activity': act['name'],
+                'Status': status,
+                'Duration': f"{act['duration'] // 60}h {act['duration'] % 60}m"
+            })
+        
+        df_timeline = pd.DataFrame(timeline_data)
+        st.dataframe(df_timeline, use_container_width=True, hide_index=True)
+    
+    # Course Notes
+    st.divider()
+    st.subheader("📝 Course Notes")
     
     now = get_now()
     weekday = now.strftime("%A")
@@ -493,44 +512,28 @@ def main():
         cols = st.columns(len(today_courses))
         for idx, course in enumerate(today_courses):
             with cols[idx]:
-                note = COURSE_NOTES.get(course, "No notes")
-                st.caption(f"**{course}**  \n{note}")
-    
-    # Today's timeline (collapsible to save space)
-    with st.expander("📅 View Today's Timeline", expanded=False):
-        if activities:
-            timeline_data = []
-            for act in activities:
-                is_completed = act['name'] in st.session_state.completed_activities
-                status = "✅ Done" if is_completed else "⏳ Pending"
-                if act['start_min'] <= to_minutes(get_now().hour, get_now().minute) < act['end_min']:
-                    status = "🟢 Now"
-                
-                timeline_data.append({
-                    'Time': f"{format_time(act['start'][0], act['start'][1])}",
-                    'Activity': act['name'][:40],
-                    'Status': status,
-                })
-            
-            df_timeline = pd.DataFrame(timeline_data)
-            st.dataframe(df_timeline, use_container_width=True, hide_index=True)
+                note = COURSE_NOTES.get(course, "No notes available")
+                st.info(f"**{course}**  \n{note}")
     
     # Pomodoro Timer
     if st.session_state.get('show_timer', False):
-        with st.expander("🍅 Pomodoro Timer", expanded=True):
-            timer_minutes = st.selectbox("Duration:", [25, 45, 60], index=0)
-            if st.button("Start Focus Session"):
-                with st.spinner(f"Focusing for {timer_minutes} minutes..."):
-                    placeholder = st.empty()
-                    for remaining in range(timer_minutes * 60, 0, -1):
-                        mins = remaining // 60
-                        secs = remaining % 60
-                        placeholder.markdown(f"### ⏰ {mins:02d}:{secs:02d}")
-                        time.sleep(1)
-                    placeholder.markdown("### 🎉 Great work!")
-                    st.balloons()
-                st.session_state.show_timer = False
-                st.rerun()
+        st.divider()
+        st.subheader("🍅 Pomodoro Timer")
+        
+        timer_minutes = st.selectbox("Select duration:", [25, 45, 60], index=0)
+        
+        if st.button("Start Timer"):
+            with st.spinner(f"Focus for {timer_minutes} minutes..."):
+                placeholder = st.empty()
+                for remaining in range(timer_minutes * 60, 0, -1):
+                    mins = remaining // 60
+                    secs = remaining % 60
+                    placeholder.markdown(f"### ⏰ Time remaining: {mins:02d}:{secs:02d}")
+                    time.sleep(1)
+                placeholder.markdown("### 🎉 Time's up! Great work!")
+                st.balloons()
+            st.session_state.show_timer = False
+            st.rerun()
 
 if __name__ == "__main__":
     main()
