@@ -164,6 +164,9 @@ def get_gaps_and_utilization(completed_activities, wasted_activities):
                         elif act['name'] in wasted_activities:
                             wasted = True
                             utilized_note = "✗ Marked as wasted"
+                        elif act['end_min'] <= current_min:
+                            wasted = True
+                            utilized_note = "✗ Auto-wasted (time passed)"
                         elif act['start_min'] <= current_min:
                             utilized_note = "⏳ In progress"
                         else:
@@ -183,6 +186,35 @@ def get_gaps_and_utilization(completed_activities, wasted_activities):
             })
     
     return gaps
+
+def get_activity_status(activity, completed_activities, wasted_activities):
+    """Determine the status of an activity"""
+    now = get_now()
+    current_min = to_minutes(now.hour, now.minute)
+    start_min = activity['start_min']
+    end_min = activity['end_min']
+    
+    # Check if marked as completed
+    if activity['name'] in completed_activities:
+        return "✅ Completed"
+    
+    # Check if marked as wasted
+    if activity['name'] in wasted_activities:
+        return "❌ Wasted"
+    
+    # Check if currently in progress
+    if start_min <= current_min < end_min:
+        return "🟢 In Progress"
+    
+    # Check if time has passed (automatically wasted for study tasks)
+    if end_min <= current_min:
+        if activity['type'] == 'study':
+            return "❌ Wasted (Auto)"
+        else:
+            return "⏳ Passed"
+    
+    # Default pending
+    return "⏳ Pending"
 
 def get_todays_stats(completed_activities, wasted_activities):
     """Get today's statistics based on ACTUAL completed/wasted activities"""
@@ -217,6 +249,14 @@ def get_todays_stats(completed_activities, wasted_activities):
     # Count tasks
     completed_tasks = len([a for a in activities if a['name'] in completed_activities])
     wasted_tasks = len([a for a in activities if a['name'] in wasted_activities])
+    
+    # Auto-wasted tasks (time passed but not marked)
+    auto_wasted_tasks = len([a for a in activities 
+                            if a['type'] == 'study' 
+                            and a['name'] not in completed_activities 
+                            and a['name'] not in wasted_activities
+                            and a['end_min'] <= current_min])
+    
     total_tasks = len([a for a in activities if a['type'] == 'study'])
     
     # Calculate progress percentages
@@ -234,7 +274,7 @@ def get_todays_stats(completed_activities, wasted_activities):
         'attended_class_minutes': attended_class_minutes,
         'class_progress': class_progress,
         'completed_tasks': completed_tasks,
-        'wasted_tasks': wasted_tasks,
+        'wasted_tasks': wasted_tasks + auto_wasted_tasks,
         'total_tasks': total_tasks,
         'activities': activities
     }
@@ -418,21 +458,19 @@ def main():
         if activities:
             for idx, act in enumerate(activities):
                 col_a, col_b, col_c, col_d = st.columns([0.3, 3, 0.8, 0.8])
-                is_completed = act['name'] in st.session_state.completed_activities
-                is_wasted = act['name'] in st.session_state.wasted_activities
-                is_current = act['start_min'] <= to_minutes(get_now().hour, get_now().minute) < act['end_min']
+                status = get_activity_status(act, st.session_state.completed_activities, st.session_state.wasted_activities)
                 
                 with col_a:
                     st.write("")
                 
                 with col_b:
-                    if is_current:
+                    if status == "🟢 In Progress":
                         st.markdown(f"**▶ {act['name']}**")
                         st.caption(f"_{format_time(act['start'][0], act['start'][1])} - {format_time(act['end'][0], act['end'][1])}_")
-                    elif is_completed:
+                    elif status == "✅ Completed":
                         st.markdown(f"✅ **{act['name']}**")
                         st.caption(f"_{format_time(act['start'][0], act['start'][1])} - {format_time(act['end'][0], act['end'][1])}_")
-                    elif is_wasted:
+                    elif "❌" in status:
                         st.markdown(f"❌ **{act['name']}**")
                         st.caption(f"_{format_time(act['start'][0], act['start'][1])} - {format_time(act['end'][0], act['end'][1])}_")
                     else:
@@ -440,18 +478,24 @@ def main():
                         st.caption(f"{format_time(act['start'][0], act['start'][1])} - {format_time(act['end'][0], act['end'][1])}")
                 
                 with col_c:
-                    if act['type'] == 'study' and not is_completed and not is_wasted:
+                    if act['type'] == 'study' and status == "⏳ Pending":
                         if st.button("✓ Complete", key=f"complete_{idx}"):
                             st.session_state.completed_activities.add(act['name'])
                             if act['name'] in st.session_state.wasted_activities:
                                 st.session_state.wasted_activities.remove(act['name'])
                             st.rerun()
-                
-                with col_d:
-                    if act['type'] == 'study' and not is_completed and not is_wasted:
+                    elif act['type'] == 'study' and "Wasted" not in status and status != "✅ Completed" and status != "🟢 In Progress":
                         if st.button("✗ Waste", key=f"waste_{idx}"):
                             st.session_state.wasted_activities.add(act['name'])
                             st.rerun()
+                
+                with col_d:
+                    if status == "🟢 In Progress":
+                        st.caption("▶ NOW")
+                    elif status == "✅ Completed":
+                        st.caption("✓ DONE")
+                    elif "❌" in status:
+                        st.caption("✗ WASTED")
         else:
             st.info("🎉 Weekend! Time to relax!")
     
@@ -589,18 +633,14 @@ def main():
         )
         st.plotly_chart(fig, use_container_width=True)
     
-    # Today's timeline with completion status
+    # Today's timeline with proper status
     st.divider()
     st.subheader("📅 Today's Timeline")
     
     if activities:
         timeline_data = []
         for act in activities:
-            is_completed = act['name'] in st.session_state.completed_activities
-            is_wasted = act['name'] in st.session_state.wasted_activities
-            status = "✅ Completed" if is_completed else "❌ Wasted" if is_wasted else "⏳ Pending"
-            if act['start_min'] <= to_minutes(get_now().hour, get_now().minute) < act['end_min']:
-                status = "🟢 In Progress"
+            status = get_activity_status(act, st.session_state.completed_activities, st.session_state.wasted_activities)
             
             timeline_data.append({
                 'Time': f"{format_time(act['start'][0], act['start'][1])} - {format_time(act['end'][0], act['end'][1])}",
@@ -611,6 +651,15 @@ def main():
         
         df_timeline = pd.DataFrame(timeline_data)
         st.dataframe(df_timeline, use_container_width=True, hide_index=True)
+        
+        # Add explanation of status icons
+        st.caption("""
+        **Status Legend:**
+        - ✅ Completed: Manually marked as done
+        - ❌ Wasted: Manually marked as wasted OR auto-wasted when time passed without completion
+        - 🟢 In Progress: Currently happening now
+        - ⏳ Pending: Not started yet
+        """)
     
     # Course Notes
     st.divider()
